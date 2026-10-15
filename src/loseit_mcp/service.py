@@ -23,10 +23,12 @@ from typing import Any, Self, TypeVar
 
 import httpx
 from lose_it import LoseIt, MealType, UnsavedFoodLogEntry
+from lose_it.core import daily as _daily
 from lose_it.core import entries as _entries
 from lose_it.core import foods as _foods
 from lose_it.core._config import Config
 from lose_it.core._dates import day_number_for
+from lose_it.core._decoder import decode_response
 from lose_it.core._http import LoseItAuthError, LoseItError
 from lose_it.core._ids import hex_to_pk, pk_to_hex
 from lose_it.core.daily import get_daydate_key
@@ -547,8 +549,20 @@ class LoseItService:
     def get_diary(self, when: str | date | None = None) -> dict[str, Any]:
         """All food log entries for a day."""
         day = self._day(when)
-        entries = self._call("diary", day)
-        items = [_entry_to_dict(e) for e in entries]
+
+        def run() -> tuple[list[Any], dict[str, tuple[float, str | None]]]:
+            # Raw fetch: the SDK parser drops the logged amount.
+            http = self.client.http
+            text = _daily.get_daily_details_raw(http, day)
+            entries = _daily.parse_entries(
+                text,
+                default_hours_from_gmt=http.config.hours_from_gmt,
+                user_name=http.config.user_name,
+            )
+            return entries, _logged_portions(decode_response(text))
+
+        entries, portions = self._reading(run, what="get_diary")
+        items = [_entry_to_dict(e, portions.get(_entry_id(e))) for e in entries]
         return {
             "date": day.isoformat(),
             "entry_count": len(items),
@@ -908,11 +922,6 @@ def _round(value: Any, places: int = 2) -> Any:
     return round(value, places) if isinstance(value, float) else value
 
 
-# For measure ordinal 8 Lose It! stores nutrients per 100 g and uses `servings`
-# as the multiplier — so `servings=2` means 200 g, not 2 g.
-_GRAMS_ORDINAL = 8
-_GRAMS_PER_SERVING = 100.0
-
 # Measure ordinals the SDK leaves unlabelled, which surface as
 # ``unknown_ord_<N>`` and read as noise to a model comparing candidates.
 #
@@ -1077,21 +1086,31 @@ _MAX_ENRICHED = 10
 _ENRICH_POOL = ThreadPoolExecutor(max_workers=_ENRICH_WORKERS, thread_name_prefix="loseit-enrich")
 
 
-def _display_portion(data: dict[str, Any]) -> tuple[float | None, str | None]:
-    """Human-facing (amount, unit) for an entry's portion."""
-    servings = data.get("servings")
-    unit = data.get("food_measure_unit")
-    if data.get("food_measure_ordinal") == _GRAMS_ORDINAL and isinstance(servings, int | float):
-        return round(servings * _GRAMS_PER_SERVING, 1), "g"
-    return _round(servings, 3), unit
+def _logged_portions(decoded: Any) -> dict[str, tuple[float, str | None]]:
+    """The (amount, unit) the app displays for each entry, by entry ID."""
+    portions: dict[str, tuple[float, str | None]] = {}
+    for fle in _daily._walk_dicts(decoded):
+        if fle.get("__type__") != _daily._FLE_FQCN:
+            continue
+        size = (fle.get("f2") or {}).get("f1") or {}
+        measure = size.get("f2") or {}
+        pk = _daily._pk_bytes_from(fle.get("f6"))
+        if isinstance(size.get("f5"), int | float) and len(pk) == 16:
+            unit = _measure_label(measure.get("ordinal"), measure.get("unit"))
+            portions[pk_to_hex(pk)] = (_round(float(size["f5"]), 3), unit)
+    return portions
 
 
-def _entry_to_dict(entry: Any) -> dict[str, Any]:
+def _entry_to_dict(
+    entry: Any, portion: tuple[float, str | None] | None = None
+) -> dict[str, Any]:
     """Compact projection of a diary entry.
 
     The SDK's own ``to_dict`` carries two full nutrient maps (raw ordinals and
     labels, including ``unknown_nutrient_*`` noise), which is far more than an
     MCP client needs per entry. Keep the useful macros and drop the rest.
+
+    ``portion`` is the logged (amount, unit); without it the servings stand in.
     """
     data = _to_dict(entry)
     if not isinstance(data, dict):
@@ -1099,7 +1118,10 @@ def _entry_to_dict(entry: Any) -> dict[str, Any]:
 
     labeled = data.get("nutrients_by_label") or {}
     macros = {k: _round(labeled[k]) for k in _MACRO_KEYS if k in labeled}
-    amount, unit = _display_portion(data)
+    amount, unit = portion or (
+        _round(data.get("servings"), 3),
+        _measure_label(data.get("food_measure_ordinal"), data.get("food_measure_unit")),
+    )
 
     return {
         "entry_id": _entry_id(entry),

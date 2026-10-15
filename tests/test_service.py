@@ -6,15 +6,17 @@ from datetime import date, timedelta
 from typing import Any
 
 import pytest
+from lose_it import FoodLogEntry
+from lose_it.core import daily as _daily
 from lose_it.core._http import LoseItAuthError, LoseItError
 
 from loseit_mcp.service import (
     _NUTRIENT_ORDINALS,
     _SENDABLE_ORDINALS,
     LoseItService,
-    _display_portion,
     _entry_to_dict,
     _is_auth_failure,
+    _logged_portions,
     _parse_date,
     _to_dict,
     _unescape,
@@ -179,20 +181,71 @@ class TestSerialization:
         assert _to_dict(3) == 3
         assert _to_dict(True) is True
 
-    def test_grams_ordinal_is_scaled_to_a_real_gram_amount(self) -> None:
-        """Ordinal 8 stores nutrients per 100g, so servings=0.6 means 60 g."""
-        amount, unit = _display_portion(
-            {"servings": 0.6, "food_measure_ordinal": 8, "food_measure_unit": "grams"}
+    def test_an_entry_shows_the_amount_it_was_logged_in(self) -> None:
+        entry = _entry_to_dict(
+            {"servings": 0.333333, "food_measure_unit": "cup"}, portion=(1.0, "cup")
         )
-        assert (amount, unit) == (60.0, "g")
+        assert (entry["amount"], entry["unit"], entry["servings"]) == (1.0, "cup", 0.333)
 
-    def test_other_ordinals_keep_their_native_unit(self) -> None:
-        amount, unit = _display_portion(
-            {"servings": 2.0, "food_measure_ordinal": 27, "food_measure_unit": "serving"}
-        )
-        assert (amount, unit) == (2.0, "serving")
+    def test_an_entry_without_a_logged_amount_falls_back_to_servings(self) -> None:
+        entry = _entry_to_dict({"servings": 2.0, "food_measure_unit": "serving"})
+        assert (entry["amount"], entry["unit"]) == (2.0, "serving")
 
     def test_entry_projection_tolerates_missing_calories(self) -> None:
         entry = _entry_to_dict({"food_name": "X", "nutrients_by_label": {}})
         assert entry["calories"] is None
         assert entry["food_name"] == "X"
+
+
+def _fle(entry_pk: list[int], quantity: float, ordinal: int, unit: str) -> dict[str, Any]:
+    """A decoded FoodLogEntry, cut down to the parts that carry the portion."""
+    return {
+        "__type__": _daily._FLE_FQCN,
+        "f2": {
+            "f1": {
+                "__type__": _daily._FOOD_SERVING_SIZE_FQCN,
+                "f0": 1.0,
+                "f2": {"ordinal": ordinal, "unit": unit},
+                "f5": quantity,
+            }
+        },
+        "f6": {"f0": entry_pk},
+    }
+
+
+class TestLoggedPortions:
+    def test_it_reads_the_amount_each_entry_was_logged_in(self) -> None:
+        decoded = {"f3": [_fle([1] * 16, 1.0, 3, "cup"), _fle([2] * 16, 185.0, 8, "grams")]}
+        assert _logged_portions(decoded) == {
+            "01" * 16: (1.0, "cup"),
+            "02" * 16: (185.0, "grams"),
+        }
+
+    def test_it_labels_the_ounce_ordinal(self) -> None:
+        assert _logged_portions(_fle([1] * 16, 4.0, 6, "unknown_ord_6")) == {"01" * 16: (4.0, "oz")}
+
+    def test_it_skips_an_entry_with_no_serving_size(self) -> None:
+        fle = _fle([1] * 16, 1.0, 3, "cup")
+        fle["f2"] = None
+        assert _logged_portions(fle) == {}
+
+    def test_the_diary_shows_logged_amounts(
+        self, settings: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        entry = FoodLogEntry(
+            food_category="", food_name="Sushi", food_brand="", food_pk_response=[],
+            entry_pk_response=[2] * 16, entry_day_key="", context_day_key="", day_num=0,
+            hours_from_gmt=0, meal_ordinal=1, extra_ordinal=3, food_measure_ordinal=8,
+            servings=1.0, food_identifier_code="", nutrients_ordered=[(0, 240.0)],
+        )
+        monkeypatch.setattr(_daily, "get_daily_details_raw", lambda http, day: "raw")
+        monkeypatch.setattr(_daily, "parse_entries", lambda text, **kw: [entry])
+        monkeypatch.setattr(
+            "loseit_mcp.service.decode_response", lambda text: _fle([2] * 16, 185.0, 8, "grams")
+        )
+        svc = LoseItService(settings)
+        config = type("Config", (), {"hours_from_gmt": 0, "user_name": ""})()
+        svc._client = type("C", (), {"http": type("H", (), {"config": config})()})()
+
+        [item] = svc.get_diary("2026-10-13")["entries"]
+        assert (item["amount"], item["unit"], item["calories"]) == (185.0, "grams", 240.0)
