@@ -260,6 +260,43 @@ class TestDeleteWeight:
         assert goals[1] == 1905.0
         assert dict(_decode(goals[2])) == {1: 230.2, 2: 2405.0, 3: 2}
 
+    def test_deleting_the_latest_weigh_in_restores_the_current_weight(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        n = self.NUM
+        sent = self._install(
+            monkeypatch,
+            _database(
+                [(n - 8, 230.2), (n, 150.0)],
+                [(n - 1, 230.2, 2405.0, 2, 1905.0, 0.0, 0.0), (n, 150.0, 1968.9, 2, 1968.9, 0.0, 0.0)],
+            ),
+        )
+        delete_weight(self.Http(), self.DAY)
+
+        assert len(sent) == 3
+        transactions = [t for body in sent for f, t in _decode(body) if f == 1]
+        assert [f for f, _ in _decode(transactions[1])] == [1, 12, 16]
+        assert [f for f, _ in _decode(transactions[2])] == [1, 11, 16]
+        bag = dict(_decode(dict(_decode(transactions[2]))[11]))
+        assert bag[1] == b"Goals"
+        assert dict(_decode(bag[2])) == {1: b"currentWeight", 2: b"230.2"}
+
+    def test_deleting_an_earlier_weigh_in_leaves_the_current_weight(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        n = self.NUM
+        sent = self._install(
+            monkeypatch,
+            _database(
+                [(n - 8, 230.2), (n, 150.0), (n + 3, 228.0)],
+                [(n - 1, 230.2, 2405.0, 2, 1905.0, 0.0, 0.0)],
+            ),
+        )
+        delete_weight(self.Http(), self.DAY)
+
+        transactions = [t for body in sent for f, t in _decode(body) if f == 1]
+        assert 11 not in [f for t in transactions for f, _ in _decode(t)]
+
     def test_a_day_without_a_weigh_in_is_refused_without_writing(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -280,7 +317,7 @@ class TestDeleteWeight:
         assert len(sent) == 1
         transactions = [t for f, t in _decode(sent[0]) if f == 1]
         fields = [f for t in transactions for f, _ in _decode(t)]
-        assert 6 in fields and 12 not in fields
+        assert 6 in fields and 12 not in fields and 11 not in fields
 
     def test_an_unacknowledged_delete_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self._install(monkeypatch, _database([(self.NUM, 150.0)], []), ack=False)
