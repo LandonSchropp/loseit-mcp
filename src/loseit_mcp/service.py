@@ -620,6 +620,10 @@ class LoseItService:
             food.setdefault("food_id", food_id)
             food["name"] = food.get("name") or detail.get("name") or ""
             food["brand"] = food.get("brand") or detail.get("brand") or ""
+        # The SDK reports the servings multiplier, not the amount logged.
+        per_serving = (detail.get("primary_serving") or {}).get("native_qty_per_serving")
+        if serving_amount is None and per_serving:
+            result["portion_size"] = round(kwargs["servings"] * per_serving, 3)
         if note:
             result["unit_interpreted_as"] = note
         return result
