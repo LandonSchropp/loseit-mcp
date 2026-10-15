@@ -622,6 +622,28 @@ class TestTransientUpstreamRetry:
         assert attempts["n"] == 1, f"write was sent {attempts['n']} times"
 
 
+class TestLogConfirmation:
+    def _log(self, **portion: Any) -> dict[str, Any]:
+        def log_food(ref: Any, servings: float, **kwargs: Any) -> dict[str, Any]:
+            amount = kwargs.get("serving_amount", servings)
+            return {"servings": servings, "portion_size": amount, "measure_unit": "cup"}
+
+        svc = _service()
+        svc._client = type("C", (), {"log_food": staticmethod(log_food)})()
+        svc.describe_food = lambda fid, retry=True: _describe_from_unsaved(  # type: ignore[method-assign]
+            fid, FakeUnsaved(qty=3.0)
+        )
+        return svc.log_food("a" * 32, **portion)
+
+    def test_one_serving_reports_the_serving_size(self) -> None:
+        assert self._log()["portion_size"] == 3.0
+
+    def test_several_servings_scale_the_serving_size(self) -> None:
+        assert self._log(servings=2)["portion_size"] == 6.0
+
+    def test_an_explicit_amount_is_reported_as_given(self) -> None:
+        assert self._log(serving_amount=1, serving_unit="cup")["portion_size"] == 1
+
 
 class TestInstructions:
     def test_they_tell_the_model_to_compare_candidates(self) -> None:
