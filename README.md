@@ -12,7 +12,7 @@ An MCP server and CLI for logging food to [Lose It!](https://www.loseit.com/).
 | --- | --- |
 | `search_food` | Search the food database; returns `food_id`s |
 | `describe_food` | Full nutrition and serving detail for one food |
-| `get_diary` | A day's entries with calories and macros, plus totals |
+| `get_diary` | A day's entries with calories and macros, exercise, calorie budget and amount under or over |
 | `log_food` | Log a database food to a meal |
 | `log_custom_food` | Log arbitrary calories/macros with no database match |
 | `log_weight` | Record a weigh-in |
