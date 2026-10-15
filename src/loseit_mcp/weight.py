@@ -221,7 +221,8 @@ def delete_weight(http: HttpClient, when: date) -> float:
     """Delete the weigh-in recorded for ``when``; returns the weight removed.
 
     Every day from ``when`` up to the next weigh-in goes back to the weight,
-    calorie burn and budget of the last logged day before ``when``.
+    calorie burn and budget of the last logged day before ``when``. Deleting the
+    latest weigh-in also sets the account's current weight to the one before it.
 
     Raises ``ValueError`` if ``when`` has no weigh-in, and ``LoseItError`` if
     Lose It does not confirm the deletion.
@@ -246,6 +247,10 @@ def delete_weight(http: HttpClient, when: date) -> float:
     )
     transactions = [_transaction(_message_field(6, recorded))]
 
+    (next_weigh_in,) = database.execute(
+        "SELECT MIN(Date) FROM RecordedWeights WHERE Date > ? AND Deleted = 0", (day_num,)
+    ).fetchone()
+
     previous = database.execute(
         "SELECT CurrentWeight, CurrentEER, CurrentActivityLevel, BudgetCalories "
         "FROM DailyLogEntries WHERE Date < ? ORDER BY Date DESC LIMIT 1",
@@ -253,9 +258,6 @@ def delete_weight(http: HttpClient, when: date) -> float:
     ).fetchone()
     if previous is not None:
         prior_weight, eer, activity_level, budget = previous
-        (next_weigh_in,) = database.execute(
-            "SELECT MIN(Date) FROM RecordedWeights WHERE Date > ? AND Deleted = 0", (day_num,)
-        ).fetchone()
         days = database.execute(
             "SELECT Date, FoodCalories, ExerciseCalories FROM DailyLogEntries "
             "WHERE Date >= ? AND Date < ? ORDER BY Date",
@@ -267,19 +269,31 @@ def delete_weight(http: HttpClient, when: date) -> float:
             + _varint_field(3, activity_level)
         )
         goals = _double_field(1, budget) + _message_field(2, burn)
-        entries = b"".join(
-            _message_field(
-                12,
-                _varint_field(1, day)
-                + _message_field(2, goals)
-                + _double_field(3, food or 0.0)
-                + _double_field(4, exercise or 0.0)
-                + _varint_field(5, now),
+        if days:
+            restored = b"".join(
+                _message_field(
+                    12,
+                    _varint_field(1, day)
+                    + _message_field(2, goals)
+                    + _double_field(3, food or 0.0)
+                    + _double_field(4, exercise or 0.0)
+                    + _varint_field(5, now),
+                )
+                for day, food, exercise in days
             )
-            for day, food, exercise in days
-        )
-        if entries:
-            transactions.append(_transaction(entries))
+            transactions.append(_transaction(restored))
+
+    # Restore Goals.currentWeight when the latest weigh-in is deleted.
+    if next_weigh_in is None and (
+        earlier := database.execute(
+            "SELECT Weight FROM RecordedWeights WHERE Date < ? AND Deleted = 0 "
+            "ORDER BY Date DESC LIMIT 1",
+            (day_num,),
+        ).fetchone()
+    ):
+        pair = _message_field(1, b"currentWeight") + _message_field(2, str(earlier[0]).encode())
+        bag = _message_field(1, b"Goals") + _message_field(2, pair) + _varint_field(3, now)
+        transactions.append(_transaction(_message_field(11, bag)))
 
     # One request per transaction: in a shared bundle the server re-derives the
     # deleted day's row from the weigh-in after applying ours.
