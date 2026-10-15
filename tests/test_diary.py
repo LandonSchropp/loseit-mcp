@@ -48,7 +48,9 @@ class _Entry:
         return {"meal": "lunch", "nutrients_by_label": {"calories": self.calories}}
 
 
-def _service(monkeypatch: pytest.MonkeyPatch, decoded: Any, food: list[float]) -> LoseItService:
+def _service(
+    monkeypatch: pytest.MonkeyPatch, decoded: Any, food: list[float], steps: int | None = 8140
+) -> LoseItService:
     svc = LoseItService.__new__(LoseItService)
     svc._settings = type("S", (), {"hours_from_gmt": 0})()
     svc._lock = threading.RLock()
@@ -59,6 +61,7 @@ def _service(monkeypatch: pytest.MonkeyPatch, decoded: Any, food: list[float]) -
     svc._generation = 0
     monkeypatch.setattr(service_module, "get_daily_details_raw", lambda http, day: "RAW")
     monkeypatch.setattr(service_module, "decode_response", lambda text: decoded)
+    monkeypatch.setattr(service_module, "get_steps", lambda http, day: steps)
     monkeypatch.setattr(
         service_module, "parse_entries", lambda text, **kwargs: [_Entry(c) for c in food]
     )
@@ -84,6 +87,7 @@ class TestGetDiary:
         assert day["exercise_calories"] == 375.3
         assert day["net_calories"] == 766.8
         assert day["calories_under_budget"] == 1138.2
+        assert day["steps"] == 8140
 
     def test_over_budget_is_negative(self, monkeypatch: pytest.MonkeyPatch) -> None:
         day = _service(monkeypatch, _decoded(1905.0, []), [2000.0]).get_diary("2026-10-14")
@@ -119,6 +123,11 @@ class TestGetDiary:
         assert day["exercise"] == []
         assert day["net_calories"] == 500
 
+    def test_no_steps(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        day = _service(monkeypatch, _decoded(1905.0, []), [], steps=None).get_diary("2026-10-14")
+
+        assert day["steps"] is None
+
 
 def _day(**overrides: Any) -> dict[str, Any]:
     return {
@@ -131,6 +140,7 @@ def _day(**overrides: Any) -> dict[str, Any]:
         "exercise_calories": 186.0,
         "net_calories": 956.1,
         "calories_under_budget": 948.9,
+        "steps": 10104,
         **overrides,
     }
 
@@ -142,6 +152,7 @@ class TestPrintDiary:
         assert "Budget 1905 · Food 1142 · Exercise 186 · Net 956 · Under 949" in out
         assert "EXERCISE (186 cal)" in out
         assert "186.0 cal  Steps Calorie Bonus" in out
+        assert "Steps 10104" in out
 
     def test_over(self, capsys: pytest.CaptureFixture[str]) -> None:
         _print_diary(_day(exercise=[], calories_under_budget=-95.0))
@@ -154,3 +165,7 @@ class TestPrintDiary:
         out = capsys.readouterr().out
         assert "Food 1142 · Exercise 186 · Net 956" in out
         assert "Budget" not in out and "Under" not in out
+
+    def test_no_steps(self, capsys: pytest.CaptureFixture[str]) -> None:
+        _print_diary(_day(steps=None, exercise=[]))
+        assert "Steps" not in capsys.readouterr().out
