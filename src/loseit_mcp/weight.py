@@ -17,15 +17,22 @@ it is not replicated here.
 
 from __future__ import annotations
 
+import os
+import sqlite3
+import struct
+import time
+import uuid
+from collections.abc import Iterator
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
+import httpx
 import lose_it.core.daily as _daily
 from lose_it.core._config import Config
 from lose_it.core._dates import day_number_for
 from lose_it.core._decoder import decode_response
 from lose_it.core._gwt import build_envelope, fmt_num, parse_response
-from lose_it.core._http import HttpClient
+from lose_it.core._http import HttpClient, LoseItAuthError, LoseItError
 from lose_it.core.daily import get_daydate_key
 
 _SERVICE = "com.loseit.core.client.service.LoseItRemoteService"
@@ -47,6 +54,12 @@ MAX_RANGE_DAYS = 60
 
 # Bisection bound, so a pathological response can't fan out unboundedly.
 MAX_BISECT_DEPTH = 7
+
+
+_GATEWAY = "https://gateway.loseit.com"
+
+# The sync transaction version the Android app sends.
+_TRANSACTION_VERSION = 2
 
 
 class WeightHistoryError(RuntimeError):
@@ -114,6 +127,168 @@ def save_weight(http: HttpClient, weight: float, when: date) -> float:
     for token in tokens[:3]:
         if isinstance(token, int | float) and token > 0 and abs(float(token) - weight) <= 0.5:
             return float(token)
+    return weight
+
+
+def _key(field: int, wire_type: int) -> bytes:
+    return _varint((field << 3) | wire_type)
+
+
+def _varint(value: int) -> bytes:
+    out = bytearray()
+    while True:
+        byte, value = value & 0x7F, value >> 7
+        out.append(byte | (0x80 if value else 0))
+        if not value:
+            return bytes(out)
+
+
+def _varint_field(field: int, value: int) -> bytes:
+    return _key(field, 0) + _varint(value)
+
+
+def _double_field(field: int, value: float) -> bytes:
+    return _key(field, 1) + struct.pack("<d", value)
+
+
+def _message_field(field: int, body: bytes) -> bytes:
+    return _key(field, 2) + _varint(len(body)) + body
+
+
+def _read_varint(data: bytes, pos: int) -> tuple[int, int]:
+    value = shift = 0
+    while True:
+        byte = data[pos]
+        pos += 1
+        value |= (byte & 0x7F) << shift
+        shift += 7
+        if not byte & 0x80:
+            return value, pos
+
+
+def _read_fields(data: bytes) -> Iterator[tuple[int, Any]]:
+    """Yield ``(field, value)`` pairs; doubles decode, messages stay raw bytes."""
+    pos = 0
+    while pos < len(data):
+        key, pos = _read_varint(data, pos)
+        field, wire_type = key >> 3, key & 7
+        if wire_type == 0:
+            value, pos = _read_varint(data, pos)
+        elif wire_type == 1:
+            value, pos = struct.unpack_from("<d", data, pos)[0], pos + 8
+        elif wire_type == 2:
+            length, pos = _read_varint(data, pos)
+            value, pos = data[pos : pos + length], pos + length
+        else:  # 5: fixed32
+            value, pos = int.from_bytes(data[pos : pos + 4], "little"), pos + 4
+        yield field, value
+
+
+def _gateway_post(http: HttpClient, path: str, body: bytes) -> bytes:
+    """POST to the mobile sync gateway."""
+    response = httpx.post(
+        _GATEWAY + path,
+        headers={
+            "authorization": f"Bearer {http.token}",
+            "content-type": "application/octet-stream; charset=utf-8",
+            "x-loseit-device": f"DROID-UID-{_device_id(http).hex.upper()}",
+            "x-loseit-device-type": "Android",
+            "x-loseit-hoursfromgmt": str(http.config.hours_from_gmt),
+            "cookie": "loseitlocale=en-US",
+        },
+        content=body,
+        timeout=120.0,
+    )
+    if response.status_code in (401, 403):
+        raise LoseItAuthError(f"Lose It's sync gateway returned {response.status_code}")
+    if response.status_code != 200:
+        raise LoseItError(f"Lose It's sync gateway returned {response.status_code}")
+    return response.content
+
+
+def _device_id(http: HttpClient) -> uuid.UUID:
+    """One stable device per account, as a phone install would be."""
+    return uuid.uuid5(uuid.NAMESPACE_URL, f"loseit-mcp:{http.config.user_id}")
+
+
+def _transaction(payload: bytes) -> tuple[int, bytes]:
+    txn_id = int.from_bytes(os.urandom(4), "big") & 0x7FFFFFFF
+    body = _varint_field(1, txn_id) + payload + _varint_field(16, _TRANSACTION_VERSION)
+    return txn_id, body
+
+
+def delete_weight(http: HttpClient, when: date) -> float:
+    """Delete the weigh-in recorded for ``when``; returns the weight removed.
+
+    Every day from ``when`` up to the next weigh-in goes back to the weight,
+    calorie burn and budget of the last logged day before ``when``.
+
+    Raises ``ValueError`` if ``when`` has no weigh-in, and ``LoseItError`` if
+    Lose It does not confirm the deletion.
+    """
+    day_num = day_number_for(when)
+    database = sqlite3.connect(":memory:")
+    database.deserialize(_gateway_post(http, "/user/database?newschema", b""))
+
+    row = database.execute(
+        "SELECT Weight FROM RecordedWeights WHERE Date = ? AND Deleted = 0", (day_num,)
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"No weigh-in is recorded for {when.isoformat()}.")
+    weight = row[0]
+
+    now = int(time.time() * 1000)
+    recorded = (
+        _varint_field(1, day_num)
+        + _double_field(2, weight)
+        + _varint_field(4, now)
+        + _varint_field(5, 1)
+    )
+    transactions = [_transaction(_message_field(6, recorded))]
+
+    previous = database.execute(
+        "SELECT CurrentWeight, CurrentEER, CurrentActivityLevel, BudgetCalories "
+        "FROM DailyLogEntries WHERE Date < ? ORDER BY Date DESC LIMIT 1",
+        (day_num,),
+    ).fetchone()
+    if previous is not None:
+        prior_weight, eer, activity_level, budget = previous
+        (next_weigh_in,) = database.execute(
+            "SELECT MIN(Date) FROM RecordedWeights WHERE Date > ? AND Deleted = 0", (day_num,)
+        ).fetchone()
+        days = database.execute(
+            "SELECT Date, FoodCalories, ExerciseCalories FROM DailyLogEntries "
+            "WHERE Date >= ? AND Date < ? ORDER BY Date",
+            (day_num, next_weigh_in or 2**31),
+        ).fetchall()
+        burn = (
+            _double_field(1, prior_weight)
+            + _double_field(2, eer)
+            + _varint_field(3, activity_level)
+        )
+        goals = _double_field(1, budget) + _message_field(2, burn)
+        entries = b"".join(
+            _message_field(
+                12,
+                _varint_field(1, day)
+                + _message_field(2, goals)
+                + _double_field(3, food or 0.0)
+                + _double_field(4, exercise or 0.0)
+                + _varint_field(5, now),
+            )
+            for day, food, exercise in days
+        )
+        if entries:
+            transactions.append(_transaction(entries))
+
+    # One request per transaction: in a shared bundle the server re-derives the
+    # deleted day's row from the weigh-in after applying ours.
+    for txn_id, body in transactions:
+        bundle = _message_field(1, body) + _varint_field(2, now)
+        bundle += _varint_field(4, int(http.config.user_id))
+        response = _gateway_post(http, "/user/loseItTransactionBundle", bundle)
+        if txn_id not in {v for f, v in _read_fields(response) if f == 1}:
+            raise LoseItError("Lose It did not confirm the weigh-in deletion.")
     return weight
 
 

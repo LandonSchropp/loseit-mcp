@@ -34,6 +34,7 @@ from lose_it.core.daily import get_daydate_key
 from .auth import Session, resolve_session
 from .config import Settings
 from .observability import current_request_id
+from .weight import delete_weight as _delete_weight
 from .weight import get_weight_history as _get_weight_history
 from .weight import save_weight
 
@@ -762,6 +763,12 @@ class LoseItService:
         saved = self._retrying(lambda: save_weight(self.client.http, weight, day))
         result["weight"] = saved
         return result
+
+    def delete_weight(self, when: str | date | None = None) -> dict[str, Any]:
+        """Delete the weigh-in recorded for a day."""
+        day = self._day(when)
+        weight = self._retrying(lambda: _delete_weight(self.client.http, day))
+        return {"action": "delete_weight", "date": day.isoformat(), "weight": weight}
 
     def get_weight_history(
         self,

@@ -398,6 +398,22 @@ def build_server(
 
     @mcp.tool(
         description=(
+            "Delete the weigh-in recorded for a day. The calorie budgets from that "
+            "day until the next weigh-in go back to the previous weigh-in's."
+        )
+    )
+    def delete_weight(
+        ctx: Context,
+        date: Annotated[
+            str | None,
+            Field(description="Day to clear: 'YYYY-MM-DD', 'today', or 'yesterday'."),
+        ] = None,
+    ) -> dict[str, Any]:
+        with acquire(ctx) as svc:
+            return svc.delete_weight(when=date)
+
+    @mcp.tool(
+        description=(
             "Read recorded weigh-ins over a date range, with min/max/change "
             "summary. Defaults to the last 30 days. A single call may span at "
             "most about 10 years; ask for a wider history in several calls."

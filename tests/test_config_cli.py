@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Self
 
 import pytest
 
@@ -156,3 +157,28 @@ class TestPrinting:
         out = capsys.readouterr().out
         assert "105 cal" in out
         assert "DRY RUN" in out
+
+
+class TestDeleteWeight:
+    def test_prints_the_deleted_weigh_in(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        settings: Settings,
+    ) -> None:
+        import loseit_mcp.cli as C
+
+        class FakeService:
+            def __init__(self, settings: Settings) -> None: ...
+            def __enter__(self) -> Self:
+                return self
+
+            def __exit__(self, *args: object) -> None: ...
+            def delete_weight(self, when: str | None) -> dict:
+                assert when == "2026-10-14"
+                return {"action": "delete_weight", "date": "2026-10-14", "weight": 150.0}
+
+        monkeypatch.setattr(C, "LoseItService", FakeService)
+        args = build_parser().parse_args(["delete-weight", "-d", "2026-10-14"])
+        assert C._run_command(args, settings) == 0
+        assert capsys.readouterr().out == "Deleted weigh-in: 150 on 2026-10-14\n"
