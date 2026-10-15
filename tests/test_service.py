@@ -250,3 +250,27 @@ class TestLoggedPortions:
 
         [item] = svc.get_diary("2026-10-13")["entries"]
         assert (item["amount"], item["unit"], item["calories"]) == (185.0, "grams", 240.0)
+
+
+class TestDeleteWeight:
+    def test_deletes_the_days_weigh_in(
+        self, settings: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import loseit_mcp.service as S
+
+        seen: list[date] = []
+
+        def fake_delete(http: Any, when: date) -> float:
+            seen.append(when)
+            return 150.0
+
+        monkeypatch.setattr(S, "_delete_weight", fake_delete)
+        svc = LoseItService(settings)
+        svc._client = type("Client", (), {"http": None})()
+
+        assert svc.delete_weight("2026-10-14") == {
+            "action": "delete_weight",
+            "date": "2026-10-14",
+            "weight": 150.0,
+        }
+        assert seen == [date(2026, 10, 14)]

@@ -160,6 +160,9 @@ def build_parser() -> argparse.ArgumentParser:
     weigh.add_argument("-d", "--date", help="Day to record (default: today).")
     weigh.add_argument("--dry-run", action="store_true", help="Preview without writing.")
 
+    delete_weight = sub.add_parser("delete-weight", help="Delete a day's weigh-in.")
+    delete_weight.add_argument("-d", "--date", help="Day to clear (default: today).")
+
     weights = sub.add_parser("weights", help="Show weigh-in history.")
     weights.add_argument("-s", "--start", help="First day (YYYY-MM-DD).")
     weights.add_argument("-e", "--end", help="Last day (YYYY-MM-DD, default: today).")
@@ -573,6 +576,13 @@ def _run_command(args: argparse.Namespace, settings: Settings) -> int:
             else:
                 prefix = "DRY RUN — would record" if result["dry_run"] else "Recorded"
                 print(f"{prefix}: {result['weight']:g} on {result['date']}")
+
+        elif args.command == "delete-weight":
+            result = svc.delete_weight(when=args.date)
+            if as_json:
+                _print_json(result)
+            else:
+                print(f"Deleted weigh-in: {result['weight']:g} on {result['date']}")
 
         elif args.command == "weights":
             hist = svc.get_weight_history(start=args.start, end=args.end, days=args.days)

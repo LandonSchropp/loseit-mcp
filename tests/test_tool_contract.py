@@ -111,6 +111,7 @@ class TestToolSurface:
         "log_custom_food",
         "delete_entry",
         "log_weight",
+        "delete_weight",
         "get_weight_history",
         "server_status",
         "whoami",
