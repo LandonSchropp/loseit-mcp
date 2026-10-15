@@ -236,6 +236,8 @@ def _print_diary(day: dict[str, Any]) -> None:
         status = f"Under {under:.0f}" if under >= 0 else f"Over {-under:.0f}"
         summary = f"Budget {day['calorie_budget']:.0f} · {summary} · {status}"
     print(summary)
+    if day["steps"] is not None:
+        print(f"Steps {day['steps']}")
 
     by_meal: dict[str, list[dict[str, Any]]] = {}
     for entry in day["entries"]:

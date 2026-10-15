@@ -40,6 +40,7 @@ from lose_it.core.daily import (
 from .auth import Session, resolve_session
 from .config import Settings
 from .observability import current_request_id
+from .steps import get_steps
 from .weight import get_weight_history as _get_weight_history
 from .weight import save_weight
 
@@ -551,7 +552,7 @@ class LoseItService:
         return self._retrying(run)
 
     def get_diary(self, when: str | date | None = None) -> dict[str, Any]:
-        """A day's food log entries, exercise and calorie budget."""
+        """A day's food log entries, exercise, calorie budget and steps."""
         day = self._day(when)
         text = self._retrying(lambda: get_daily_details_raw(self.client.http, day))
         config = self.client.http.config
@@ -575,6 +576,7 @@ class LoseItService:
             "net_calories": net,
             # Negative when over budget.
             "calories_under_budget": None if budget is None else round(budget - net, 1),
+            "steps": self._retrying(lambda: get_steps(self.client.http, day)),
             "entries": items,
         }
 
