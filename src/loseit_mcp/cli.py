@@ -226,9 +226,17 @@ def _print_search(results: list[dict[str, Any]]) -> None:
 
 
 def _print_diary(day: dict[str, Any]) -> None:
-    print(f"{day['date']} — {day['entry_count']} entries, {day['total_calories']:g} cal")
-    if not day["entries"]:
-        return
+    print(f"{day['date']} — {day['entry_count']} entries")
+    summary = (
+        f"Food {day['total_calories']:.0f} · Exercise {day['exercise_calories']:.0f} · "
+        f"Net {day['net_calories']:.0f}"
+    )
+    if day["calorie_budget"] is not None:
+        under = day["calories_under_budget"]
+        status = f"Under {under:.0f}" if under >= 0 else f"Over {-under:.0f}"
+        summary = f"Budget {day['calorie_budget']:.0f} · {summary} · {status}"
+    print(summary)
+
     by_meal: dict[str, list[dict[str, Any]]] = {}
     for entry in day["entries"]:
         by_meal.setdefault(entry["meal"], []).append(entry)
@@ -248,6 +256,11 @@ def _print_diary(day: dict[str, Any]) -> None:
                 f"{i.get('food_name')}{brand}"
             )
             print(f"  {'':>7}       {i.get('entry_id')}")
+
+    if day["exercise"]:
+        print(f"\nEXERCISE ({day['exercise_calories']:.0f} cal)")
+        for e in day["exercise"]:
+            print(f"  {e['calories']:>7.1f} cal  {e['name']}")
 
 
 def _print_logged(result: dict[str, Any]) -> None:

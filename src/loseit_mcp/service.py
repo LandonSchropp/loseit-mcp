@@ -29,7 +29,13 @@ from lose_it.core._config import Config
 from lose_it.core._dates import day_number_for
 from lose_it.core._http import LoseItAuthError, LoseItError
 from lose_it.core._ids import hex_to_pk, pk_to_hex
-from lose_it.core.daily import get_daydate_key
+from lose_it.core.daily import (
+    _walk_dicts,
+    decode_response,
+    get_daily_details_raw,
+    get_daydate_key,
+    parse_entries,
+)
 
 from .auth import Session, resolve_session
 from .config import Settings
@@ -545,14 +551,30 @@ class LoseItService:
         return self._retrying(run)
 
     def get_diary(self, when: str | date | None = None) -> dict[str, Any]:
-        """All food log entries for a day."""
+        """A day's food log entries, exercise and calorie budget."""
         day = self._day(when)
-        entries = self._call("diary", day)
+        text = self._retrying(lambda: get_daily_details_raw(self.client.http, day))
+        config = self.client.http.config
+        entries = parse_entries(
+            text,
+            default_hours_from_gmt=config.hours_from_gmt,
+            user_name=config.user_name,
+        )
         items = [_entry_to_dict(e) for e in entries]
+        food = round(sum(i.get("calories") or 0 for i in items), 1)
+        budget, exercise = _budget_and_exercise(decode_response(text))
+        exercise_calories = round(sum(e["calories"] for e in exercise), 1)
+        net = round(food - exercise_calories, 1)
         return {
             "date": day.isoformat(),
             "entry_count": len(items),
-            "total_calories": round(sum(i.get("calories") or 0 for i in items), 1),
+            "total_calories": food,
+            "calorie_budget": budget,
+            "exercise": exercise,
+            "exercise_calories": exercise_calories,
+            "net_calories": net,
+            # Negative when over budget.
+            "calories_under_budget": None if budget is None else round(budget - net, 1),
             "entries": items,
         }
 
@@ -865,6 +887,32 @@ def _to_dict(obj: Any) -> Any:
     if hasattr(obj, "__dict__"):
         return {k: _to_dict(v) for k, v in vars(obj).items() if not k.startswith("_")}
     return str(obj)
+
+
+_MODEL = "com.loseit.core.client.model."
+
+
+def _budget_and_exercise(decoded: Any) -> tuple[float | None, list[dict[str, Any]]]:
+    """The day's calorie budget and exercise entries from a daily-details response.
+
+    The budget is the day's ``DailyLogGoalsState``; ``GoalsSummary`` doesn't match the app.
+    """
+    budget = None
+    exercise = []
+    for node in _walk_dicts(decoded):
+        kind = node.get("__type__", "")
+        if kind.startswith(_MODEL + "DailyLogGoalsState/"):
+            budget = node.get("f0")
+        elif kind.startswith(_MODEL + "ExerciseLogEntry/"):
+            # f4 is the category, f5 the activity name when there is one.
+            activity = node.get("f4") or {}
+            exercise.append(
+                {
+                    "name": activity.get("f5") or activity.get("f4"),
+                    "calories": _round(node.get("f1") or 0.0, 1),
+                }
+            )
+    return budget, exercise
 
 
 def _entry_id(entry: Any) -> str | None:
