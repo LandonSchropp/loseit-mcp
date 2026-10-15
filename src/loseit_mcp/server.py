@@ -241,8 +241,10 @@ def build_server(
     @mcp.tool(
         description=(
             "Read the food diary for a day: every logged entry with calories and "
-            "macros, plus the day's totals. Each entry carries an `entry_id` for "
-            "delete_entry."
+            "macros, the day's totals, its exercise, and its calorie budget. "
+            "`net_calories` is food minus exercise; `calories_under_budget` is the "
+            "budget minus net, negative when over. Each entry carries an "
+            "`entry_id` for delete_entry."
         )
     )
     def get_diary(
