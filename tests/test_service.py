@@ -197,6 +197,15 @@ class TestSerialization:
         assert entry["food_name"] == "X"
 
 
+def _entry(name: str, calories: float) -> FoodLogEntry:
+    return FoodLogEntry(
+        food_category="", food_name=name, food_brand="", food_pk_response=[],
+        entry_pk_response=[2] * 16, entry_day_key="", context_day_key="", day_num=0,
+        hours_from_gmt=0, meal_ordinal=1, extra_ordinal=3, food_measure_ordinal=8,
+        servings=1.0, food_identifier_code="", nutrients_ordered=[(0, calories)],
+    )
+
+
 def _fle(entry_pk: list[int], quantity: float, ordinal: int, unit: str) -> dict[str, Any]:
     """A decoded FoodLogEntry, cut down to the parts that carry the portion."""
     return {
@@ -232,12 +241,7 @@ class TestLoggedPortions:
     def test_the_diary_shows_logged_amounts(
         self, settings: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        entry = FoodLogEntry(
-            food_category="", food_name="Sushi", food_brand="", food_pk_response=[],
-            entry_pk_response=[2] * 16, entry_day_key="", context_day_key="", day_num=0,
-            hours_from_gmt=0, meal_ordinal=1, extra_ordinal=3, food_measure_ordinal=8,
-            servings=1.0, food_identifier_code="", nutrients_ordered=[(0, 240.0)],
-        )
+        entry = _entry("Sushi", 240.0)
         monkeypatch.setattr("loseit_mcp.service.get_daily_details_raw", lambda http, day: "raw")
         monkeypatch.setattr("loseit_mcp.service.parse_entries", lambda text, **kw: [entry])
         monkeypatch.setattr("loseit_mcp.service.get_steps", lambda http, day: None)
@@ -250,6 +254,32 @@ class TestLoggedPortions:
 
         [item] = svc.get_diary("2026-10-13")["entries"]
         assert (item["amount"], item["unit"], item["calories"]) == (185.0, "grams", 240.0)
+
+
+class TestDeleteEntry:
+    def test_deletes_without_writing_to_disk(
+        self, settings: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+    ) -> None:
+        from lose_it import LoseIt
+        from lose_it.core import entries as _entries
+
+        home = tmp_path / "home"
+        home.mkdir(mode=0o500)
+        monkeypatch.setenv("HOME", str(home))
+        entry = _entry("Squash", 560.0)
+        deleted: list[FoodLogEntry] = []
+        monkeypatch.setattr(_entries, "delete", lambda http, e: deleted.append(e))
+        client = object.__new__(LoseIt)
+        client.config = type("Config", (), {"user_name": ""})()
+        client.http = None
+        client.diary = lambda day: [entry]  # type: ignore[method-assign]
+        svc = LoseItService(settings)
+        svc._client = client
+
+        result = svc.delete_entry("02" * 16, when="2026-10-18")
+
+        assert deleted == [entry]
+        assert result["entry"]["food_name"] == "Squash"
 
 
 class TestDeleteWeight:

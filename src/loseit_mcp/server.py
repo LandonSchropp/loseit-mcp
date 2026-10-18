@@ -367,7 +367,7 @@ def build_server(
     @mcp.tool(
         description=(
             "Delete a diary entry. Get the `entry_id` from get_diary for the same "
-            "day. A recoverable copy is written to local trash before deleting."
+            "day. The deleted entry is returned so it can be re-logged."
         )
     )
     def delete_entry(

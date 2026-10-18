@@ -867,9 +867,9 @@ class LoseItService:
     ) -> dict[str, Any]:
         """Delete a diary entry by its ID, on the given day.
 
-        The entry is looked up in that day's diary first so we delete exactly
-        what the caller saw. A recoverable trash record is written before the
-        wire delete (an upstream SDK invariant).
+        The entry must be in that day's diary, or a ``ValueError`` lists the IDs
+        that are. The result's ``entry`` is the deleted entry, so it can be
+        re-logged.
         """
         day = self._day(when)
         entries = self._call("diary", day)
@@ -880,7 +880,7 @@ class LoseItService:
                 f"No entry {entry_id!r} in the diary for {day.isoformat()}. "
                 f"Entries that day: {available}"
             )
-        result = self._call("delete_entry", match)
+        result = self._call("delete_entry", match, trash_sink=None, acknowledge_no_trash=True)
         return _to_dict(result)
 
 
