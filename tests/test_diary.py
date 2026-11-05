@@ -89,6 +89,17 @@ class TestGetDiary:
         assert day["calories_under_budget"] == 1138.2
         assert day["steps"] == 8140
 
+    def test_exercise_reached_by_several_paths_counts_once(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        exercises = [_exercise(7.0, "Steps Calorie Bonus", None)]
+        decoded = _decoded(1898.0, exercises)
+        decoded["f3"]["f3"]["f5"] = {"items": exercises}
+        day = _service(monkeypatch, decoded, []).get_diary("2026-11-03")
+
+        assert day["exercise"] == [{"name": "Steps Calorie Bonus", "calories": 7.0}]
+        assert day["exercise_calories"] == 7.0
+
     def test_over_budget_is_negative(self, monkeypatch: pytest.MonkeyPatch) -> None:
         day = _service(monkeypatch, _decoded(1905.0, []), [2000.0]).get_diary("2026-10-14")
 

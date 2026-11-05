@@ -920,11 +920,13 @@ def _budget_and_exercise(decoded: Any) -> tuple[float | None, list[dict[str, Any
     """
     budget = None
     exercise = []
+    seen: set[int] = set()
     for node in _walk_dicts(decoded):
         kind = node.get("__type__", "")
         if kind.startswith(_MODEL + "DailyLogGoalsState/"):
             budget = node.get("f0")
-        elif kind.startswith(_MODEL + "ExerciseLogEntry/"):
+        elif kind.startswith(_MODEL + "ExerciseLogEntry/") and id(node) not in seen:
+            seen.add(id(node))
             # f4 is the category, f5 the activity name when there is one.
             activity = node.get("f4") or {}
             exercise.append(
