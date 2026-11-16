@@ -24,12 +24,12 @@ class LoseItMcpError(RuntimeError):
 
 _UPSTREAM_CHANGED = (
     "Lose It's private API did not respond as expected. This usually means they "
-    "deployed a new version of their web app, which changes the protocol this "
-    "server speaks.\n\n"
+    "deployed a new version of their web app. This server switches to new "
+    "versions automatically, but this one either couldn't be loaded or changed "
+    "the protocol in a way the server can't follow on its own.\n\n"
     "Nothing is wrong with your account or your food log. Tell the user this is "
-    "a server-side compatibility problem that needs the operator to refresh the "
-    "GWT build identifiers (LOSEIT_STRONG_NAME / LOSEIT_POLICY_HASH), and that "
-    "retrying now will not help.\n\n"
+    "a server-side compatibility problem that needs the operator's attention, "
+    "and that retrying now will not help.\n\n"
     "Technical detail: {detail}"
 )
 

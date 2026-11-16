@@ -10,6 +10,7 @@ from lose_it.core._http import LoseItAuthError
 
 import loseit_mcp.service as service_module
 from loseit_mcp.cli import _print_diary
+from loseit_mcp.config import Settings
 from loseit_mcp.service import LoseItService
 
 _MODEL = "com.loseit.core.client.model."
@@ -52,7 +53,8 @@ def _service(
     monkeypatch: pytest.MonkeyPatch, decoded: Any, food: list[float], steps: int | None = 8140
 ) -> LoseItService:
     svc = LoseItService.__new__(LoseItService)
-    svc._settings = type("S", (), {"hours_from_gmt": 0})()
+    svc._settings = Settings(hours_from_gmt=0)
+    svc._client_build = svc._settings.strong_name
     svc._lock = threading.RLock()
     config = type("Config", (), {"hours_from_gmt": 0, "user_name": "Tester"})()
     svc._client = type("C", (), {"http": type("H", (), {"config": config})()})()

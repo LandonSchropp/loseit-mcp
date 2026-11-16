@@ -74,7 +74,7 @@ class TestErrorTranslation:
         assert isinstance(translated, LoseItMcpError)
         text = str(translated)
         assert "new version of their web app" in text
-        assert "LOSEIT_STRONG_NAME" in text
+        assert "switches to new versions automatically" in text
         assert "retrying now will not help" in text
 
     def test_weight_history_decode_failure_is_explained(self) -> None:

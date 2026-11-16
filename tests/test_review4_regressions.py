@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 
+from loseit_mcp.config import Settings
 from loseit_mcp.paths import split_token_path
 from loseit_mcp.service import MAX_HISTORY_SPAN_DAYS
 from loseit_mcp.throttle import Limit, ThrottleMiddleware, client_key
@@ -181,7 +182,8 @@ class TestWeightHistorySpanCap:
         from loseit_mcp.service import LoseItService
 
         svc = LoseItService.__new__(LoseItService)
-        svc._settings = type("S", (), {"hours_from_gmt": 0})()
+        svc._settings = Settings(hours_from_gmt=0)
+        svc._client_build = svc._settings.strong_name
         svc._lock = threading.RLock()
         svc._client = None
         svc._inflight = 0
@@ -247,7 +249,8 @@ class TestReauthDoesNotCloseInFlightClients:
         from loseit_mcp.service import LoseItService
 
         svc = LoseItService.__new__(LoseItService)
-        svc._settings = None
+        svc._settings = Settings(hours_from_gmt=0)
+        svc._client_build = svc._settings.strong_name
         svc._session = None
         svc._client = None
         svc._lock = threading.RLock()

@@ -12,6 +12,7 @@ from typing import Any, ClassVar
 
 import pytest
 
+from loseit_mcp.config import Settings
 from loseit_mcp.server import _format_search
 from loseit_mcp.service import (
     LoseItService,
@@ -493,7 +494,8 @@ class TestTransientUpstreamRetry:
         from loseit_mcp.service import LoseItService
 
         svc = LoseItService.__new__(LoseItService)
-        svc._settings = None
+        svc._settings = Settings(hours_from_gmt=0)
+        svc._client_build = svc._settings.strong_name
         svc._lock = threading.RLock()
         svc._client = None
         svc._inflight = 0

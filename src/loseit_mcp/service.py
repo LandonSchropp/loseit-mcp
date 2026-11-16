@@ -23,6 +23,7 @@ from typing import Any, Self, TypeVar
 
 import httpx
 from lose_it import LoseIt, MealType, UnsavedFoodLogEntry
+from lose_it.core import _decoder
 from lose_it.core import daily as _daily
 from lose_it.core import entries as _entries
 from lose_it.core import foods as _foods
@@ -38,13 +39,14 @@ from lose_it.core.daily import (
     parse_entries,
 )
 
+from . import build as gwt_build
 from .auth import Session, resolve_session
 from .config import Settings
 from .observability import current_request_id
 from .steps import get_steps
+from .weight import WeightHistoryError, save_weight
 from .weight import delete_weight as _delete_weight
 from .weight import get_weight_history as _get_weight_history
-from .weight import save_weight
 
 _T = TypeVar("_T")
 
@@ -115,6 +117,22 @@ def _is_auth_failure(exc: Exception) -> bool:
         message = str(exc)
         return any(marker in message for marker in _AUTH_FAILURE_MARKERS)
     return False
+
+
+# Failures that mean Lose It may have deployed a new web build.
+_BUILD_CHANGE_MARKERS = (
+    "IncompatibleRemoteServiceException",
+    "SerializationException",
+    "No schema for",
+)
+
+
+def _is_build_change(exc: Exception) -> bool:
+    """True if ``exc`` may mean Lose It deployed a new web build."""
+    if isinstance(exc, WeightHistoryError):
+        return True
+    message = str(exc)
+    return any(marker in message for marker in _BUILD_CHANGE_MARKERS)
 
 
 # Lose It's search endpoint intermittently answers with a bare
@@ -219,6 +237,8 @@ class LoseItService:
         self._settings = settings
         self._session: Session | None = None
         self._client: LoseIt | None = None
+        # The permutation the current client sends.
+        self._client_build: str | None = None
         self._lock = threading.RLock()
         # Requests run outside the lock, so a re-auth can land while another
         # thread is still using the previous client. Superseded clients are
@@ -248,13 +268,29 @@ class LoseItService:
                 self._client = self._build_client(self.session)
             return self._client
 
+    def _current_build(self, *, force: bool = False) -> tuple[str, str]:
+        s = self._settings
+        return gwt_build.tracker.current(s.base_url, s.strong_name, s.policy_hash, force=force)
+
+    def _sync_build(self, *, force: bool = False) -> tuple[str, str]:
+        """Follow a Lose It deploy, returning the build and type layouts now in use."""
+        strong_name, _ = self._current_build(force=force)
+        with self._lock:
+            if self._client is not None and self._client_build not in (None, strong_name):
+                # Retired, not closed: another thread may be mid-request on it.
+                self._retired.append(self._client)
+                self._client = None
+        return strong_name, _decoder._catalog().permutation
+
     def _build_client(self, session: Session) -> LoseIt:
+        strong_name, policy_hash = self._current_build()
+        self._client_build = strong_name
         config = Config.model_construct(
             user_id=session.user_id,
             user_name=session.user_name,
             hours_from_gmt=self._settings.hours_from_gmt,
-            policy_hash=self._settings.policy_hash,
-            strong_name=self._settings.strong_name,
+            policy_hash=policy_hash,
+            strong_name=strong_name,
             base_url=self._settings.base_url,
             service_url="https://www.loseit.com/web/service",
         )
@@ -330,12 +366,19 @@ class LoseItService:
         search has eight enrichment threads in flight — only the first performs
         the re-login; the rest see a newer generation and simply retry against
         the session it produced, instead of queuing eight sequential logins.
+
+        Also retries once when a failure turns out to be a Lose It deploy.
         """
+        seen = self._sync_build()
         generation = self._generation
         try:
             with self._in_flight():
                 return fn()
         except Exception as exc:
+            if _is_build_change(exc) and self._sync_build(force=True) != seen:
+                logger.info("Lose It deployed a new build, retrying on it")
+                with self._in_flight():
+                    return fn()
             if not _is_auth_failure(exc):
                 raise
             self._reauthenticate(seen_generation=generation)
@@ -346,16 +389,14 @@ class LoseItService:
         """Run a *read* under one attempt budget covering auth and transient faults.
 
         Only for reads. A write that appears to fail may still have been
-        applied, so retrying one risks logging the same food twice.
-
-        The budget is shared rather than nested. Running a transient loop
-        around the auth loop multiplied them, and could reach four real logins
-        from a single read — invisible, and enough to look like an attack to
-        Lose It's own protections.
+        applied, so retrying one risks logging the same food twice. A failure
+        that turns out to be a Lose It deploy is retried once on the new build.
         """
+        seen = self._sync_build()
         generation = self._generation
         last: Exception | None = None
         relogins = 0
+        followed_deploy = False
         for attempt in range(1, _READ_ATTEMPTS + 1):
             try:
                 with self._in_flight():
@@ -363,6 +404,15 @@ class LoseItService:
             except Exception as exc:
                 last = exc
                 final = attempt == _READ_ATTEMPTS
+                if (
+                    not final
+                    and not followed_deploy
+                    and _is_build_change(exc)
+                    and self._sync_build(force=True) != seen
+                ):
+                    logger.info("Lose It deployed a new build during %s, retrying", what)
+                    followed_deploy = True
+                    continue
                 if _is_auth_failure(exc):
                     # One re-login per read. Three back-to-back password logins
                     # in a few hundred milliseconds is lockout-shaped, and if

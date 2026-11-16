@@ -50,6 +50,18 @@ def session(valid_token: str) -> Session:
     )
 
 
+@pytest.fixture(autouse=True)
+def _offline_build_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the deploy check off the network: report the configured build."""
+    from loseit_mcp import build
+
+    monkeypatch.setattr(
+        build.tracker,
+        "current",
+        lambda base_url, strong_name, policy_hash, force=False: (strong_name, policy_hash),
+    )
+
+
 @pytest.fixture
 def settings(tmp_path: Path) -> Settings:
     """Isolated settings — never reads the developer's real config."""

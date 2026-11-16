@@ -22,6 +22,7 @@ from loseit_mcp.service import (
     _unescape,
     account_today,
 )
+from loseit_mcp.weight import WeightHistoryError
 
 
 class TestAuthFailureClassification:
@@ -304,3 +305,144 @@ class TestDeleteWeight:
             "weight": 150.0,
         }
         assert seen == [date(2026, 10, 14)]
+
+
+class FakeBuilds:
+    """Stands in for the deploy tracker: Lose It deploys when told to."""
+
+    def __init__(self, settings: Any) -> None:
+        self.ids = (settings.strong_name, settings.policy_hash)
+        self.deploy_on_force: tuple[str, str] | None = None
+        self.forced = 0
+
+    def current(
+        self, base_url: str, strong_name: str, policy_hash: str, force: bool = False
+    ) -> tuple[str, str]:
+        if force:
+            self.forced += 1
+            if self.deploy_on_force:
+                self.ids, self.deploy_on_force = self.deploy_on_force, None
+        return self.ids
+
+
+class TestFollowingDeploys:
+    NEW = ("201A8433DE84E0887AA4B65F2AD4F842", "F5AA51DFF7600BE94631854AFC5DEFE9")
+    REJECTED = LoseItError(
+        "GWT error: com.google.gwt.user.client.rpc.IncompatibleRemoteServiceException/3936916533"
+    )
+
+    @pytest.fixture
+    def builds(self, settings: Any, monkeypatch: pytest.MonkeyPatch) -> FakeBuilds:
+        from loseit_mcp import build
+
+        fake = FakeBuilds(settings)
+        monkeypatch.setattr(build, "tracker", fake)
+        return fake
+
+    @pytest.fixture
+    def svc(self, settings: Any, session: Any) -> LoseItService:
+        svc = LoseItService(settings)
+        svc._session = session
+        return svc
+
+    def sent_ids(self, svc: LoseItService) -> tuple[str, str]:
+        config = svc.client.http.config
+        return config.strong_name, config.policy_hash
+
+    def failing_once(self, svc: LoseItService, exc: Exception) -> Any:
+        attempts: list[tuple[str, str]] = []
+
+        def call() -> str:
+            attempts.append(self.sent_ids(svc))
+            if len(attempts) == 1:
+                raise exc
+            return "ok"
+
+        call.attempts = attempts  # type: ignore[attr-defined]
+        return call
+
+    def test_a_rejected_call_is_retried_on_the_new_build(
+        self, svc: LoseItService, builds: FakeBuilds
+    ) -> None:
+        builds.deploy_on_force = self.NEW
+        call = self.failing_once(svc, self.REJECTED)
+
+        assert svc._retrying(call) == "ok"
+        assert call.attempts[-1] == self.NEW
+
+    def test_a_rejected_read_is_retried_on_the_new_build(
+        self, svc: LoseItService, builds: FakeBuilds
+    ) -> None:
+        builds.deploy_on_force = self.NEW
+        call = self.failing_once(svc, self.REJECTED)
+
+        assert svc._reading(call) == "ok"
+        assert call.attempts[-1] == self.NEW
+
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            KeyError("No schema for 'com.loseit.core.client.model.GoalsSummary/26794011'"),
+            WeightHistoryError("Lose It's response for 2026-09-18 could not be decoded."),
+        ],
+    )
+    def test_an_undecodable_reply_also_checks_for_a_deploy(
+        self, svc: LoseItService, builds: FakeBuilds, exc: Exception
+    ) -> None:
+        builds.deploy_on_force = self.NEW
+
+        assert svc._reading(self.failing_once(svc, exc)) == "ok"
+        assert builds.forced == 1
+
+    def test_new_type_layouts_alone_justify_a_retry(
+        self, svc: LoseItService, builds: FakeBuilds, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from lose_it.core import _decoder
+
+        def deploy_layouts_only(*args: Any, force: bool = False) -> tuple[str, str]:
+            if force:
+                monkeypatch.setattr(_decoder._catalog(), "permutation", "NEWER")
+            return builds.ids
+
+        monkeypatch.setattr(builds, "current", deploy_layouts_only)
+        call = self.failing_once(svc, KeyError("No schema for 'x'"))
+
+        assert svc._retrying(call) == "ok"
+
+    @pytest.mark.parametrize("run", ["_retrying", "_reading"])
+    def test_without_a_deploy_the_failure_stands(
+        self, svc: LoseItService, builds: FakeBuilds, run: str
+    ) -> None:
+        with pytest.raises(LoseItError):
+            getattr(svc, run)(self.failing_once(svc, self.REJECTED))
+        assert builds.forced == 1
+
+    def test_a_deploy_another_request_already_followed_still_retries(
+        self, svc: LoseItService, builds: FakeBuilds
+    ) -> None:
+        def fail_while_another_request_follows_the_deploy() -> str:
+            builds.ids = self.NEW  # The other request's forced check got here first.
+            raise self.REJECTED
+
+        attempts = iter(
+            [fail_while_another_request_follows_the_deploy, lambda: self.sent_ids(svc)]
+        )
+
+        assert svc._retrying(lambda: next(attempts)()) == self.NEW
+
+    def test_a_deploy_noticed_between_calls_switches_the_client(
+        self, svc: LoseItService, builds: FakeBuilds
+    ) -> None:
+        svc._retrying(lambda: None)
+        old = svc.client
+        builds.ids = self.NEW
+
+        assert svc._retrying(lambda: self.sent_ids(svc)) == self.NEW
+        assert svc.client is not old
+
+    def test_unrelated_failures_do_not_check(
+        self, svc: LoseItService, builds: FakeBuilds
+    ) -> None:
+        with pytest.raises(LoseItError):
+            svc._retrying(self.failing_once(svc, LoseItError("GWT error: Boom")))
+        assert builds.forced == 0
