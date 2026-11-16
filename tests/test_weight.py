@@ -168,7 +168,7 @@ class TestWeightHistory:
     def test_single_day_partial_decode_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         day = date(2026, 6, 1)
         self._install(monkeypatch, [([], True)])
-        with pytest.raises(WeightHistoryError):
+        with pytest.raises(WeightHistoryError, match="2026-06-01 could not be decoded"):
             get_weight_history(None, day, day)
 
     def test_results_are_sorted_and_deduplicated(self, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -353,7 +353,7 @@ def _collect_window(
     origin_num: int,
     depth: int = 0,
 ) -> None:
-    """Fetch one window, bisecting when the response is too large to decode.
+    """Fetch one window, bisecting when the response doesn't fully decode.
 
     Response size scales with how much was logged, not with the number of days,
     so no fixed window is safe for every account or period. On a partial decode
@@ -365,8 +365,9 @@ def _collect_window(
     if partial:
         if window_start >= window_end:
             raise WeightHistoryError(
-                "A single day's Lose It! response was too large to decode "
-                f"({_num_to_date(origin, origin_num, window_start).isoformat()})."
+                "Lose It's response for "
+                f"{_num_to_date(origin, origin_num, window_start).isoformat()} "
+                "could not be decoded."
             )
         if depth >= MAX_BISECT_DEPTH:
             raise WeightHistoryError(
@@ -409,7 +410,7 @@ def get_weight_history(
     ``saveRecordedWeight`` (which would write).
 
     The request is split into windows of at most ``chunk_days``, and any window
-    whose response is still too large is bisected further. A single wide range
+    whose response still doesn't fully decode is bisected further. A single wide range
     overflows the SDK decoder and degrades to a partial decode in which the only
     surviving ``RecordedWeight`` nodes are out-of-range anchors — so an
     unchunked year-long query would otherwise return "no weigh-ins" rather than

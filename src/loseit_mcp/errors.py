@@ -55,7 +55,7 @@ _PROTOCOL_MARKERS = (
     "Unexpected response",
     "unexpected response",
     "Could not decode",
-    "too large to decode",
+    "could not be decoded",
     "IncompatibleRemoteServiceException",
     "SerializationException",
     "policy",

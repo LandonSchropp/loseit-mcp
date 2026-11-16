@@ -78,7 +78,7 @@ class TestErrorTranslation:
         assert "retrying now will not help" in text
 
     def test_weight_history_decode_failure_is_explained(self) -> None:
-        translated = translate(WeightHistoryError("response too large to decode"))
+        translated = translate(WeightHistoryError("could not be decoded"))
         assert isinstance(translated, LoseItMcpError)
         assert "compatibility" in str(translated)
 
